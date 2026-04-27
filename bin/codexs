@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+
+const commands = require('../src/commands');
+
+function usage(output = process.stdout) {
+  output.write(`codexs - Codex 账号切换助手
+
+命令：
+  codexs init|i
+  codexs add|a
+  codexs list|l
+  codexs use|u [account]
+  codexs remove|r [account]
+  codexs help
+
+说明：
+  account 可以是序号、邮箱或短 ID；use 不带 account 时自动选择有额度账号。
+  ~/.codex-accounts 只存账号。
+  ~/.codex 不是独立账号，只是当前生效槽位。
+  codexs remove 不带账号时删除离线账号。
+  codexs init 会检查基础环境，并把当前 ~/.codex 登录态同步到账号库。
+
+环境变量：
+  CODEX_ACCOUNTS_ROOT  覆盖账号根目录，默认 ~/.codex-accounts
+  CODEX_BIN            指定 codex 可执行文件路径
+`);
+}
+
+function assertNoExtra(args, command) {
+  if (args.length !== 0) throw new Error(`用法：codexs ${command}`);
+}
+
+async function main(argv = process.argv.slice(2), io = {}) {
+  const output = io.output || process.stdout;
+  const input = io.input || process.stdin;
+  const errOutput = io.errOutput || process.stderr;
+  const env = io.env || process.env;
+  const ALIAS = { i: 'init', l: 'list', a: 'add', u: 'use', r: 'remove', '-h': 'help', '--help': 'help' };
+  const [raw = 'help', ...args] = argv;
+  const command = ALIAS[raw] || raw;
+
+  switch (command) {
+    case 'init':
+      assertNoExtra(args, 'init');
+      commands.initAccounts(env, output);
+      break;
+    case 'list':
+      assertNoExtra(args, 'list');
+      await commands.listAccounts(env, output);
+      break;
+    case 'add':
+      assertNoExtra(args, 'add');
+      await commands.addAccount(env, output);
+      break;
+    case 'use':
+      if (args.length === 0) await commands.useDefaultAccount(env, output);
+      else if (args.length === 1) commands.useAccount(args[0], env, output);
+      else throw new Error('用法：codexs use [account]');
+      break;
+    case 'remove':
+      if (args.length === 0) await commands.removeOfflineAccounts(env, output, input, errOutput);
+      else if (args.length === 1) commands.removeAccount(args[0], env, output);
+      else throw new Error('用法：codexs remove [account]');
+      break;
+    case 'help':
+      usage(output);
+      break;
+    default:
+      process.stderr.write(`未知命令：${raw}\n`);
+      usage(process.stderr);
+      process.exitCode = 1;
+  }
+}
+
+main(process.argv.slice(2)).catch((error) => {
+  const message = error && error.message ? error.message : String(error);
+  console.error(`错误：${message}`);
+  process.exitCode = 1;
+});

@@ -1,0 +1,32 @@
+{
+  "name": "@uninto/codexs",
+  "version": "0.1.3",
+  "description": "Codex account switching CLI",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./src/codex.js",
+  "bin": {
+    "codexs": "bin/codexs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "keywords": [
+    "codex",
+    "cli",
+    "account-switcher"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check bin/codexs && node --check src/*.js && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
