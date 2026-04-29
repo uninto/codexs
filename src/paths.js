@@ -30,6 +30,10 @@ const getCodexHome = (env = process.env) => {
   return path.join(getHomeDir(env), '.codex');
 };
 
+const getAccountsFile = (env = process.env) => {
+  return path.join(getCodexHome(env), 'codex-accounts.json');
+};
+
 // 所有账号和 auth 文件操作前都拒绝符号链接，避免越界读写。
 const assertNotSymlink = (targetPath, message) => {
   if (!fs.existsSync(targetPath)) return;
@@ -53,8 +57,7 @@ const ensureDir = (dirPath) => {
 };
 
 // 先写唯一临时文件再 rename，避免 auth.json 出现半写入状态或并发冲突。
-const copyFileAtomically = (sourcePath, targetPath) => {
-  ensureReadableFile(sourcePath);
+const writeFileAtomically = (targetPath, data) => {
   const targetDir = path.dirname(targetPath);
   if (!fs.existsSync(targetDir)) {
     throw new Error(`目标目录不存在：${targetDir}`);
@@ -62,7 +65,6 @@ const copyFileAtomically = (sourcePath, targetPath) => {
   assertNotSymlink(targetDir, '拒绝写入符号链接目录');
   assertNotSymlink(targetPath, '拒绝覆盖符号链接文件');
 
-  const data = fs.readFileSync(sourcePath);
   const tempPath = path.join(
     targetDir,
     `.${path.basename(targetPath)}.tmp.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 10)}`,
@@ -89,10 +91,11 @@ const copyFileAtomically = (sourcePath, targetPath) => {
 
 module.exports = {
   assertNotSymlink,
-  copyFileAtomically,
   ensureDir,
   ensureReadableFile,
+  getAccountsFile,
   getAccountsRoot,
   getCodexHome,
   getHomeDir,
+  writeFileAtomically,
 };

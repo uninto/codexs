@@ -7,7 +7,7 @@ const { PassThrough, Writable } = require('node:stream');
 const { test } = require('node:test');
 const commands = require('../src/commands');
 const usage = require('../src/usage');
-const { validateName } = require('../src/accounts');
+const { normalizeAccount, readAccounts, validateName, writeAccounts } = require('../src/accounts');
 const { getUsageRowColor } = commands;
 const { ACCOUNT_USAGE_STATES } = usage;
 
@@ -28,6 +28,33 @@ const makeJwt = (email) => {
 };
 
 const writeAuth = (homeDir, email, extraTokens = {}) => {
+  fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+  const auth = {
+    tokens: {
+      id_token: makeJwt(email),
+      ...extraTokens,
+    },
+  };
+  fs.writeFileSync(
+    path.join(homeDir, 'auth.json'),
+    JSON.stringify(auth),
+    { mode: 0o600 },
+  );
+  syncTestStoreFromLegacyDir(homeDir, auth);
+};
+
+const syncTestStoreFromLegacyDir = (homeDir, auth) => {
+  const parts = homeDir.split(path.sep);
+  const index = parts.lastIndexOf('.codex-accounts');
+  if (index < 1) return;
+  if (parts[index + 1] && parts[index + 1].startsWith('.')) return;
+  const home = parts.slice(0, index).join(path.sep) || path.sep;
+  const env = { HOME: home };
+  const existing = readAccounts(env).filter((account) => account.id !== normalizeAccount(auth).id);
+  writeAccounts([...existing, normalizeAccount(auth)], env);
+};
+
+const writeLegacyAuth = (homeDir, email, extraTokens = {}) => {
   fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     path.join(homeDir, 'auth.json'),
@@ -50,16 +77,18 @@ const writeUsageAuth = (homeDir, email) => {
 
 const writeAuthWithIdentity = (homeDir, identityPayload, extraTokens = {}) => {
   fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    path.join(homeDir, 'auth.json'),
-    JSON.stringify({
-      tokens: {
-        id_token: makeJwt(identityPayload),
-        ...extraTokens,
-      },
-    }),
-    { mode: 0o600 },
-  );
+  const auth = {
+    tokens: {
+      id_token: makeJwt(identityPayload),
+      ...extraTokens,
+    },
+  };
+  fs.writeFileSync(path.join(homeDir, 'auth.json'), JSON.stringify(auth), { mode: 0o600 });
+  syncTestStoreFromLegacyDir(homeDir, auth);
+};
+
+const readAccountsFile = (home) => {
+  return JSON.parse(fs.readFileSync(path.join(home, '.codex', 'codex-accounts.json'), 'utf8'));
 };
 
 const writeFakeCodex = (binDir) => {
@@ -185,6 +214,19 @@ test('list shows progress on stderr when progress is forced', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /正在探活账号 1\/1：a@example\.com/);
+});
+
+test('codex-accounts.json stores only auth objects without derived identity fields', () => {
+  const home = makeTempHome();
+  const accountsRoot = path.join(home, '.codex-accounts');
+  writeAuth(path.join(accountsRoot, 'a@example.com'), 'a@example.com');
+
+  const store = readAccountsFile(home);
+
+  assert.equal(store.version, 1);
+  assert.equal(store.accounts.length, 1);
+  assert.deepEqual(Object.keys(store.accounts[0]), ['tokens']);
+  assert.equal(store.accounts[0].tokens.id_token, makeJwt('a@example.com'));
 });
 
 test('list renders usage columns and light gray cooling rows', async () => {
@@ -399,25 +441,24 @@ test('probe account status uses usage endpoint response status', async () => {
   })), 'unknown');
 });
 
-test('list rejects symlink account directories', () => {
+test('list rejects symlinked codex-accounts.json', () => {
   if (process.platform === 'win32') return;
 
   const home = makeTempHome();
-  const accountsRoot = path.join(home, '.codex-accounts');
-  const targetRoot = path.join(home, 'external-account');
-  fs.mkdirSync(accountsRoot, { recursive: true });
-  writeAuth(targetRoot, 'linked@example.com');
-  fs.symlinkSync(targetRoot, path.join(accountsRoot, 'linked@example.com'), 'dir');
+  const codexHome = path.join(home, '.codex');
+  const externalStore = path.join(home, 'external-codex-accounts.json');
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(externalStore, '{"version":1,"accounts":[]}');
+  fs.symlinkSync(externalStore, path.join(codexHome, 'codex-accounts.json'));
 
   const result = runCli(['list'], {
     env: {
       HOME: home,
-      CODEX_ACCOUNTS_ROOT: accountsRoot,
     },
   });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /拒绝读取符号链接账号目录/);
+  assert.match(result.stderr, /拒绝读取符号链接账号库/);
 });
 
 test('remove shows indexed progress while probing accounts', () => {
@@ -775,7 +816,57 @@ test('init syncs the active Codex account without jq', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /已同步当前 Codex 账号：init@example\.com/);
-  assert.ok(fs.existsSync(path.join(accountsRoot, 'init@example.com', 'auth.json')));
+  assert.deepEqual(readAccounts({ HOME: home }).map((account) => account.id), ['init@example.com']);
+});
+
+test('init imports legacy .codex-accounts into codex-accounts.json', () => {
+  const home = makeTempHome();
+  const accountsRoot = path.join(home, '.codex-accounts');
+  const binDir = path.join(home, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const codexBin = writeFakeCodex(binDir);
+  writeLegacyAuth(path.join(accountsRoot, 'legacy@example.com'), 'legacy@example.com');
+  writeAuth(path.join(home, '.codex'), 'current@example.com');
+
+  const result = runCli(['init'], {
+    env: {
+      HOME: home,
+      CODEX_ACCOUNTS_ROOT: accountsRoot,
+      CODEX_BIN: codexBin,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /已从旧账号库迁移账号：1 个/);
+  assert.deepEqual(
+    readAccounts({ HOME: home }).map((account) => account.id).sort(),
+    ['current@example.com', 'legacy@example.com'],
+  );
+  assert.equal(fs.existsSync(accountsRoot), false);
+});
+
+test('init migration keeps existing codex-accounts.json accounts when legacy duplicates exist', () => {
+  const home = makeTempHome();
+  const accountsRoot = path.join(home, '.codex-accounts');
+  const binDir = path.join(home, 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const codexBin = writeFakeCodex(binDir);
+  writeAuth(path.join(accountsRoot, 'same@example.com'), 'same@example.com', { refresh_token: 'new' });
+  writeLegacyAuth(path.join(accountsRoot, 'same@example.com'), 'same@example.com', { refresh_token: 'old' });
+  writeAuth(path.join(home, '.codex'), 'current@example.com');
+
+  const result = runCli(['init'], {
+    env: {
+      HOME: home,
+      CODEX_ACCOUNTS_ROOT: accountsRoot,
+      CODEX_BIN: codexBin,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const existing = readAccounts({ HOME: home }).find((account) => account.id === 'same@example.com');
+  assert.equal(existing.auth.tokens.refresh_token, 'new');
+  assert.equal(fs.existsSync(accountsRoot), false);
 });
 
 test('add overwrites an existing account with the new login result', () => {
@@ -797,9 +888,9 @@ test('add overwrites an existing account with the new login result', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /已覆盖已有账号：existing@example\.com/);
 
-  const auth = JSON.parse(fs.readFileSync(path.join(accountsRoot, 'existing@example.com', 'auth.json'), 'utf8'));
+  const auth = readAccounts({ HOME: home })[0].auth;
   assert.equal(auth.tokens.refresh_token, 'new-token');
-  assert.deepEqual(fs.readdirSync(accountsRoot).sort(), ['existing@example.com']);
+  assert.deepEqual(readAccounts({ HOME: home }).map((account) => account.id), ['existing@example.com']);
 });
 
 test('add reports codex login failure details', () => {
@@ -827,7 +918,7 @@ test('add reports codex login failure details', () => {
   assert.match(result.stderr, /codex 路径：/);
   assert.match(result.stderr, /退出码：7/);
   assert.match(result.stderr, /请先单独运行确认 Codex CLI 可登录：/);
-  assert.deepEqual(fs.readdirSync(accountsRoot), []);
+  assert.deepEqual(readAccounts({ HOME: home }), []);
 });
 
 test('add falls back to short account_id when email is missing', () => {
@@ -851,7 +942,7 @@ test('add falls back to short account_id when email is missing', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /已添加账号：6b17e1c8/);
-  assert.ok(fs.existsSync(path.join(accountsRoot, '6b17e1c8', 'auth.json')));
+  assert.deepEqual(readAccounts({ HOME: home }).map((account) => account.id), ['6b17e1c8']);
 });
 
 test('init falls back to short account_id when email is missing', () => {
@@ -876,7 +967,7 @@ test('init falls back to short account_id when email is missing', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /已同步当前 Codex 账号：6b17e1c8/);
-  assert.ok(fs.existsSync(path.join(accountsRoot, '6b17e1c8', 'auth.json')));
+  assert.deepEqual(readAccounts({ HOME: home }).map((account) => account.id), ['6b17e1c8']);
 });
 
 test('probe account status returns offline when auth.json missing and unknown when fetch unavailable', async () => {
@@ -982,18 +1073,17 @@ test('use without selector reports empty account store instead of failing on usa
   assert.match(chunks.join(''), /还没有账号/);
 });
 
-test('copyFileAtomically leaves no temp residue and refuses to overwrite a symlink', () => {
-  const { copyFileAtomically } = require('../src/paths');
+test('writeFileAtomically leaves no temp residue and refuses to overwrite a symlink', () => {
+  const { writeFileAtomically } = require('../src/paths');
   const home = makeTempHome();
-  const src = path.join(home, 'src.json');
-  fs.writeFileSync(src, '{"k":1}');
   const targetDir = path.join(home, 'dst');
   fs.mkdirSync(targetDir, { recursive: true });
+  const data = '{"k":1}';
 
-  copyFileAtomically(src, path.join(targetDir, 'auth.json'));
+  writeFileAtomically(path.join(targetDir, 'auth.json'), data);
   const remaining = fs.readdirSync(targetDir);
   assert.deepEqual(remaining, ['auth.json']);
-  assert.equal(fs.readFileSync(path.join(targetDir, 'auth.json'), 'utf8'), '{"k":1}');
+  assert.equal(fs.readFileSync(path.join(targetDir, 'auth.json'), 'utf8'), data);
 
   if (process.platform !== 'win32') {
     const externalTarget = path.join(home, 'external.json');
@@ -1001,7 +1091,7 @@ test('copyFileAtomically leaves no temp residue and refuses to overwrite a symli
     const linkPath = path.join(targetDir, 'auth.json');
     fs.unlinkSync(linkPath);
     fs.symlinkSync(externalTarget, linkPath);
-    assert.throws(() => copyFileAtomically(src, linkPath), /符号链接/);
+    assert.throws(() => writeFileAtomically(linkPath, data), /符号链接/);
     // 拒绝后不能污染 external 文件。
     assert.equal(fs.readFileSync(externalTarget, 'utf8'), 'old');
     // 拒绝后 targetDir 也不应残留 .tmp.* 文件。

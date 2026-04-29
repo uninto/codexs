@@ -4,26 +4,26 @@ const { spawnSync } = require('node:child_process');
 const { findCodexBin } = require('./codex');
 const {
   assertNotSymlink,
-  copyFileAtomically,
   ensureDir,
   ensureReadableFile,
-  getAccountsRoot,
   getCodexHome,
+  writeFileAtomically,
 } = require('./paths');
 const {
-  accountHome,
-  currentAccountHome,
+  currentAccount,
   currentSlotLabel,
   displayAccount,
-  lightStatusLabel,
-  listAccountDirs,
-  resolveAccountHome,
+  importLegacyAccounts,
+  readAccounts,
+  removeAccountEntry,
+  resolveAccount,
+  upsertAccount,
 } = require('./accounts');
-const { decodeAccountLabel } = require('./auth');
+const { decodeAccountLabel, readAuth } = require('./auth');
 const usage = require('./usage');
 const term = require('./terminal');
 
-// init 先做环境预检，失败时暴露真实缺失项而不是继续写账号目录。
+// init 先做环境预检，失败时暴露真实缺失项而不是继续写账号库。
 const runInitChecks = (env = process.env) => {
   findCodexBin(env);
   const codexHome = getCodexHome(env);
@@ -31,32 +31,30 @@ const runInitChecks = (env = process.env) => {
   if (!fs.existsSync(codexHome)) throw new Error(`Codex 目录不存在：${codexHome}`);
   assertNotSymlink(codexHome, '拒绝读取符号链接目录');
   ensureReadableFile(authPath);
-  ensureDir(getAccountsRoot(env));
 };
 
 const syncCurrentAccount = (env = process.env, output = process.stdout) => {
   const codexHome = getCodexHome(env);
-  const accountLabel = decodeAccountLabel(codexHome);
-  if (!accountLabel) throw new Error('未能从当前 auth.json 解析出邮箱或短 ID');
-  const targetHome = accountHome(accountLabel, env);
-  if (fs.existsSync(targetHome)) {
-    output.write(`账号已存在：${accountLabel}，未覆盖：${targetHome}\n`);
+  const { account, overwritten } = upsertAccount(readAuth(codexHome), env);
+  if (overwritten) {
+    output.write(`账号已存在：${displayAccount(account)}，已更新：${path.join(codexHome, 'codex-accounts.json')}\n`);
     return;
   }
-  ensureDir(targetHome);
-  copyFileAtomically(path.join(codexHome, 'auth.json'), path.join(targetHome, 'auth.json'));
-  output.write(`已同步当前 Codex 账号：${accountLabel}，已写入：${targetHome}\n`);
+  output.write(`已同步当前 Codex 账号：${displayAccount(account)}，已写入：${path.join(codexHome, 'codex-accounts.json')}\n`);
 };
 
 const initAccounts = (env = process.env, output = process.stdout) => {
   runInitChecks(env);
+  const migration = importLegacyAccounts(env);
+  if (migration.imported > 0) output.write(`已从旧账号库迁移账号：${migration.imported} 个，`);
+  if (migration.removedLegacyRoot) output.write('已删除旧账号库，');
   output.write('环境检查通过，');
   syncCurrentAccount(env, output);
 };
 
 // 清理登录中断遗留的临时目录，只处理 `.login.*` 且跳过符号链接。
 const removeLoginTempDirs = (env = process.env) => {
-  const root = getAccountsRoot(env);
+  const root = getCodexHome(env);
   if (!fs.existsSync(root)) return;
   for (const name of fs.readdirSync(root)) {
     if (!name.startsWith('.login.')) continue;
@@ -66,35 +64,29 @@ const removeLoginTempDirs = (env = process.env) => {
 };
 
 const useAccount = (selector, env = process.env, output = process.stdout) => {
-  const homeDir = resolveAccountHome(selector, env);
-  if (!fs.existsSync(homeDir)) throw new Error(`账号不存在：${selector}`);
-  assertNotSymlink(homeDir, '拒绝使用符号链接账号目录');
-  const sourceAuth = path.join(homeDir, 'auth.json');
-  if (!fs.existsSync(sourceAuth)) throw new Error(`账号未登录，缺少 auth.json：${selector}`);
-  assertNotSymlink(sourceAuth, '拒绝读取符号链接 auth.json');
+  const account = resolveAccount(selector, env);
+  if (!account) throw new Error(`账号不存在：${selector}`);
   const codexHome = getCodexHome(env);
   ensureDir(codexHome);
-  copyFileAtomically(sourceAuth, path.join(codexHome, 'auth.json'));
-  output.write(`已切换 Codex 账号：${displayAccount(homeDir)}，已更新：${path.join(codexHome, 'auth.json')}；VS Code Codex 可能需要 Reload Window 或重启 VS Code 后生效。\n`);
+  writeFileAtomically(path.join(codexHome, 'auth.json'), `${JSON.stringify(account.auth, null, 2)}\n`);
+  output.write(`已切换 Codex 账号：${displayAccount(account)}，已更新：${path.join(codexHome, 'auth.json')}；VS Code Codex 可能需要 Reload Window 或重启 VS Code 后生效。\n`);
 };
 
-const removeAccountDir = (homeDir, message, env = process.env, output = process.stdout) => {
-  if (!fs.existsSync(homeDir)) throw new Error(`账号不存在：${homeDir}`);
-  assertNotSymlink(homeDir, '拒绝删除符号链接账号目录');
-  const account = displayAccount(homeDir);
-  fs.rmSync(homeDir, { recursive: true, force: true });
+const removeAccountFromStore = (account, message, env = process.env, output = process.stdout) => {
+  const accountLabel = displayAccount(account);
+  removeAccountEntry(account, env);
   removeLoginTempDirs(env);
-  output.write(`${message}：${account}\n`);
+  output.write(`${message}：${accountLabel}\n`);
 };
 
 const removeAccount = (selector, env = process.env, output = process.stdout) => {
-  const homeDir = resolveAccountHome(selector, env);
-  if (!fs.existsSync(homeDir)) throw new Error(`账号不存在：${selector}`);
-  removeAccountDir(homeDir, '已删除账号', env, output);
+  const account = resolveAccount(selector, env);
+  if (!account) throw new Error(`账号不存在：${selector}`);
+  removeAccountFromStore(account, '已删除账号', env, output);
 };
 
 const writeEmptyAccountsMessage = (env = process.env, output = process.stdout) => {
-  output.write(`（${getAccountsRoot(env)} 下还没有账号）\n`);
+  output.write(`（${path.join(getCodexHome(env), 'codex-accounts.json')} 里还没有账号）\n`);
 };
 
 const formatCodexLoginFailure = (codexBin, result) => {
@@ -116,36 +108,37 @@ const removeOfflineAccounts = async (
   input = process.stdin,
   errOutput = process.stderr,
 ) => {
-  ensureDir(getAccountsRoot(env));
+  ensureDir(getCodexHome(env));
   removeLoginTempDirs(env);
-  const dirs = listAccountDirs(env);
-  if (dirs.length === 0) {
+  const accounts = readAccounts(env);
+  if (accounts.length === 0) {
     writeEmptyAccountsMessage(env, output);
     return;
   }
 
   let removed = 0;
   let abortedReason = '';
-  for (const [index, dir] of dirs.entries()) {
-    const account = displayAccount(dir);
-    const authPath = path.join(dir, 'auth.json');
-    const status = fs.existsSync(authPath)
-      ? await term.withProgress(`正在检测账号 ${index + 1}/${dirs.length}：${account}`, () => usage.probeAccountStatus(dir), env)
-      : 'offline';
+  for (const [index, account] of accounts.entries()) {
+    const accountLabel = displayAccount(account);
+    const status = await term.withProgress(
+      `正在检测账号 ${index + 1}/${accounts.length}：${accountLabel}`,
+      () => usage.probeAccountStatus(account),
+      env,
+    );
     if (status === 'unknown') {
-      errOutput.write(`无法确认账号在线状态，已跳过：${account}\n`);
+      errOutput.write(`无法确认账号在线状态，已跳过：${accountLabel}\n`);
       continue;
     }
     if (status !== 'offline') continue;
     let confirmed = false;
     try {
-      confirmed = await term.confirmRemoval(account, input, output);
+      confirmed = await term.confirmRemoval(accountLabel, input, output);
     } catch (error) {
       abortedReason = error && error.message ? error.message : String(error);
       break;
     }
     if (!confirmed) continue;
-    removeAccountDir(dir, '已删除离线账号', env, output);
+    removeAccountFromStore(account, '已删除离线账号', env, output);
     removed += 1;
   }
   if (removed > 0) output.write(`本次共删除离线账号：${removed}\n`);
@@ -173,26 +166,25 @@ const runCodexLogin = (codexBin, env) => {
 // 使用临时 CODEX_HOME 完成登录，成功后再移动到账号仓库。
 const addAccount = async (env = process.env, output = process.stdout) => {
   const codexBin = findCodexBin(env);
-  const root = getAccountsRoot(env);
+  const root = getCodexHome(env);
   ensureDir(root);
   const tempHome = fs.mkdtempSync(path.join(root, '.login.'));
   let keepTempHome = false;
   try {
     const result = runCodexLogin(codexBin, { ...env, CODEX_HOME: tempHome });
     if (result.status !== 0) throw new Error(formatCodexLoginFailure(codexBin, result));
+    const auth = readAuth(tempHome);
     const accountLabel = decodeAccountLabel(tempHome);
-    if (!accountLabel) {
+    if (!accountLabel || !auth) {
       keepTempHome = true;
       throw new Error(`登录完成，但未能从 auth.json 解析出邮箱或短 ID\n临时目录保留在：${tempHome}`);
     }
-    const targetHome = accountHome(accountLabel, env);
-    if (fs.existsSync(targetHome)) {
-      copyFileAtomically(path.join(tempHome, 'auth.json'), path.join(targetHome, 'auth.json'));
-      fs.rmSync(tempHome, { recursive: true, force: true });
+    const { overwritten } = upsertAccount(auth, env);
+    fs.rmSync(tempHome, { recursive: true, force: true });
+    if (overwritten) {
       output.write(`已覆盖已有账号：${accountLabel}\n`);
       return;
     }
-    fs.renameSync(tempHome, targetHome);
     output.write(`已添加账号：${accountLabel}\n`);
   } catch (error) {
     if (!keepTempHome) {
@@ -204,32 +196,32 @@ const addAccount = async (env = process.env, output = process.stdout) => {
 
 // 当前账号进入 limited/cooling/offline 后，才尝试切到第一个 available 账号。
 const useDefaultAccount = async (env = process.env, output = process.stdout) => {
-  const dirs = listAccountDirs(env);
-  if (dirs.length === 0) {
+  const accounts = readAccounts(env);
+  if (accounts.length === 0) {
     writeEmptyAccountsMessage(env, output);
     return;
   }
-  const usageResults = await term.withProgress('正在查询账号额度...', () => usage.loadUsage(dirs), env);
+  const usageResults = await term.withProgress('正在查询账号额度...', () => usage.loadUsage(accounts), env);
   if (!usage.hasUsageData(usageResults)) throw new Error('无法查询账号额度，未切换账号');
-  const currentHome = currentAccountHome(env);
-  const currentKey = currentHome ? path.basename(currentHome) : '';
-  if (currentHome && !usage.accountShouldAutoSwitch(usageResults, currentKey)) {
-    output.write(`当前 Codex 账号状态无需自动切换：${displayAccount(currentHome)}，未切换账号。\n`);
+  const activeAccount = currentAccount(env);
+  const currentKey = activeAccount ? activeAccount.id : '';
+  if (activeAccount && !usage.accountShouldAutoSwitch(usageResults, currentKey)) {
+    output.write(`当前 Codex 账号状态无需自动切换：${displayAccount(activeAccount)}，未切换账号。\n`);
     return;
   }
   const next = await term.withProgress(
-    currentHome ? `正在检查当前账号额度：${displayAccount(currentHome)}` : '正在选择 available 账号...',
-    () => findFirstAvailableAccount(dirs, usageResults, currentKey),
+    activeAccount ? `正在检查当前账号额度：${displayAccount(activeAccount)}` : '正在选择 available 账号...',
+    () => findFirstAvailableAccount(accounts, usageResults, currentKey),
     env,
   );
   if (!next) {
-    if (currentHome) {
-      output.write(`当前 Codex 账号没有 available 替代账号：${displayAccount(currentHome)}，未切换账号。\n`);
+    if (activeAccount) {
+      output.write(`当前 Codex 账号没有 available 替代账号：${displayAccount(activeAccount)}，未切换账号。\n`);
       return;
     }
     throw new Error('没有找到 available 账号，未切换账号');
   }
-  useAccount(path.basename(next), env, output);
+  useAccount(next.id, env, output);
 };
 
 const getUsageRowColor = ({ isOffline, planLabel, h5Used, d7Used, h5Percent, d7Percent }) => {
@@ -244,24 +236,27 @@ const getUsageRowColor = ({ isOffline, planLabel, h5Used, d7Used, h5Percent, d7P
   return '';
 };
 
-const findFirstAvailableAccount = (dirs, usageResults, currentKey = '') => {
-  return dirs.find((dir) => {
-    const key = path.basename(dir);
-    if (key === currentKey) return false;
-    return usage.accountIsAvailableForAutoSwitch(usageResults, key);
+const findFirstAvailableAccount = (accounts, usageResults, currentKey = '') => {
+  return accounts.find((account) => {
+    if (account.id === currentKey) return false;
+    return usage.accountIsAvailableForAutoSwitch(usageResults, account.id);
   });
 };
 
+const lightStatusLabel = (account) => {
+  return account && account.auth ? '已登录' : '未登录';
+};
+
 // 组装列表行数据；已有 Usage 数据时不再额外探活。
-const buildAccountRow = async (dir, index, total, currentAccount, usageResults, env) => {
-  const account = displayAccount(dir);
-  const key = path.basename(dir);
-  let status = lightStatusLabel(dir);
+const buildAccountRow = async (account, index, total, activeLabel, usageResults, env) => {
+  const accountLabel = displayAccount(account);
+  const key = account.id;
+  let status = lightStatusLabel(account);
   let isOffline = false;
-  const isCurrent = Boolean(currentAccount && account === currentAccount);
+  const isCurrent = Boolean(activeLabel && accountLabel === activeLabel);
 
   if (status === '已登录' && !usage.usageAvailableForAccount(usageResults, key)) {
-    const probeStatus = await term.withProgress(`正在探活账号 ${index}/${total}：${account}`, () => usage.probeAccountStatus(dir), env);
+    const probeStatus = await term.withProgress(`正在探活账号 ${index}/${total}：${accountLabel}`, () => usage.probeAccountStatus(account), env);
     if (probeStatus === 'offline') {
       status = '离线';
       isOffline = true;
@@ -270,12 +265,12 @@ const buildAccountRow = async (dir, index, total, currentAccount, usageResults, 
     }
   }
 
-  return { account, isCurrent, isOffline, key, status, indexDisplay: term.formatListIndex(index, isCurrent) };
+  return { account: accountLabel, isCurrent, isOffline, key, status, indexDisplay: term.formatListIndex(index, isCurrent) };
 };
 
-const loadAccountRows = async (dirs, currentAccount, usageResults, env = process.env) => {
-  return Promise.all(dirs.map((dir, index) => {
-    return buildAccountRow(dir, index + 1, dirs.length, currentAccount, usageResults, env);
+const loadAccountRows = async (accounts, activeLabel, usageResults, env = process.env) => {
+  return Promise.all(accounts.map((account, index) => {
+    return buildAccountRow(account, index + 1, accounts.length, activeLabel, usageResults, env);
   }));
 };
 
@@ -313,12 +308,12 @@ const renderStatusRow = (row, accountWidth, output = process.stdout) => {
 };
 
 const listAccounts = async (env = process.env, output = process.stdout) => {
-  ensureDir(getAccountsRoot(env));
-  const dirs = listAccountDirs(env);
-  const currentAccount = currentSlotLabel(env);
-  const usageResults = await term.withProgress('正在查询账号额度...', () => usage.loadUsage(dirs), env);
+  ensureDir(getCodexHome(env));
+  const accounts = readAccounts(env);
+  const activeLabel = currentSlotLabel(env);
+  const usageResults = await term.withProgress('正在查询账号额度...', () => usage.loadUsage(accounts), env);
   const hasUsage = usage.hasUsageData(usageResults);
-  const rows = await loadAccountRows(dirs, currentAccount, usageResults, env);
+  const rows = await loadAccountRows(accounts, activeLabel, usageResults, env);
   const accountWidth = Math.max('Account'.length, ...rows.map((r) => r.account.length));
 
   const header = hasUsage

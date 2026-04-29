@@ -2,20 +2,35 @@
 
 `codexs` 是一个轻量的 Codex 账号切换 CLI。
 
-它把账号统一存放在 `~/.codex-accounts/`，每个目录只保存
-`auth.json`：
+它把账号统一存放在 `~/.codex/codex-accounts.json`，切换时再把选中账号的
+`auth` 写入当前生效槽位 `~/.codex/auth.json`：
 
 ```text
-~/.codex-accounts/
-├── user-a@example.com/
-│   └── auth.json
-└── user-b@example.com/
-    └── auth.json
+~/.codex/
+├── auth.json       # 当前生效账号
+└── codex-accounts.json  # codexs 账号库
+```
+
+`codex-accounts.json` 只保存最小结构：
+
+```json
+{
+  "version": 1,
+  "accounts": [
+    {
+      "tokens": {
+        "id_token": "...",
+        "access_token": "...",
+        "account_id": "..."
+      }
+    }
+  ]
+}
 ```
 
 CLI 不会打印 token。它优先从 `auth.json` 的 `id_token` payload 中解析
 `email`；如果没有邮箱，再回退到 `tokens.account_id` 的前 8 位，
-用于列表显示和账号目录命名。
+用于列表显示和账号选择。
 
 ## 运行方式
 
@@ -70,15 +85,18 @@ codexs i
 
 - `codex` 可执行文件可找到
 - `~/.codex/auth.json` 存在、可读、不是符号链接
-- `~/.codex-accounts/` 可创建、可写、不是符号链接
+- `~/.codex/` 可写，`~/.codex/codex-accounts.json` 不是符号链接
 
 检查通过后，CLI 会从当前 `~/.codex/auth.json` 解析邮箱；如果没有邮箱，
-则改用 `account_id` 前 8 位，并同步为账号目录。目标账号已存在时，
-`init` 不会覆盖已有目录：
+则改用 `account_id` 前 8 位，并同步到账号库：
 
 ```bash
-~/.codex-accounts/<email-or-short-id>/auth.json
+~/.codex/codex-accounts.json
 ```
+
+`init` 还会检测旧账号库 `~/.codex-accounts/`，并把其中已有账号导入到
+新的 `~/.codex/codex-accounts.json`。导入只发生在 `init`，`list/use/add/remove`
+不会再读取旧账号库。旧账号库导入成功后会被删除。
 
 登录账号：
 
@@ -87,13 +105,13 @@ codexs add
 ```
 
 `add` 会调用 `codex login` 完成登录，并按登录态里的邮箱，或邮箱缺失时
-的 `account_id` 前 8 位落到：
+的 `account_id` 前 8 位写入：
 
 ```bash
-~/.codex-accounts/<email-or-short-id>/auth.json
+~/.codex/codex-accounts.json
 ```
 
-如果该邮箱已存在，`add` 会直接覆盖已有账号目录里的 `auth.json`，
+如果该邮箱已存在，`add` 会直接覆盖账号库里的对应 `auth`，
 不会额外保留一份新登录结果，也不会残留 `.login.*` 临时目录。
 
 查看账号列表：
@@ -117,8 +135,8 @@ codexs l
 
 本地状态检查时：
 
-- `已登录`：账号目录里有 `auth.json`
-- `未登录`：账号目录存在，但没有 `auth.json`
+- `已登录`：账号库里有可用 `auth`
+- `未登录`：账号库存在账号条目，但没有可用 `auth`
 - `离线`：Usage 接口探活明确返回 401 / 403
 - `未知`：网络异常、服务异常或其他无法确认的探活失败
 
@@ -164,7 +182,7 @@ codexs remove 2
 codexs r 2
 ```
 
-`remove` 会删除账号库里的目标账号目录，并同步清理所有 `.login.*`
+`remove` 会删除账号库里的目标账号，并同步清理所有 `.login.*`
 临时登录目录；不会修改当前生效账号：
 
 ```bash
@@ -181,7 +199,7 @@ codexs r
 
 无参 `remove` 会通过 Usage 接口探活所有已登录账号，并只提示是否删除
 明确离线（401 / 403）的账号；网络异常、服务异常等未知状态会跳过。
-没有 `auth.json` 的账号目录也会提示删除。确认选项：
+账号库里没有可用 `auth` 的账号也会提示删除。确认选项：
 
 ```text
 1：确定
@@ -194,7 +212,7 @@ codexs r
 CODEX_ACCOUNTS_ROOT=$HOME/.codex-accounts
 ```
 
-用于覆盖账号根目录。
+仅用于 `codexs init` 导入旧 `~/.codex-accounts` 时覆盖旧账号库路径。
 
 ```bash
 CODEX_BIN=/path/to/codex

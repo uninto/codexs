@@ -17,8 +17,7 @@ const readAuth = (homeDir) => {
   return JSON.parse(fs.readFileSync(authPath, 'utf8'));
 };
 
-const readIdTokenPayload = (homeDir) => {
-  const auth = readAuth(homeDir);
+const readIdTokenPayloadFromAuth = (auth) => {
   const token = auth && auth.tokens && auth.tokens.id_token;
   if (!token) return null;
   const [, payload] = token.split('.');
@@ -26,18 +25,17 @@ const readIdTokenPayload = (homeDir) => {
   return JSON.parse(decodeBase64Url(payload));
 };
 
-const decodeAccountEmail = (homeDir) => {
+const decodeAccountEmailFromAuth = (auth) => {
   try {
-    const decoded = readIdTokenPayload(homeDir);
+    const decoded = readIdTokenPayloadFromAuth(auth);
     return decoded && typeof decoded.email === 'string' ? decoded.email : '';
   } catch (_) {
     return '';
   }
 };
 
-const decodeShortAccountId = (homeDir) => {
+const decodeShortAccountIdFromAuth = (auth) => {
   try {
-    const auth = readAuth(homeDir);
     const accountId = auth && auth.tokens && auth.tokens.account_id;
     return typeof accountId === 'string' && accountId.length >= 8 ? accountId.slice(0, 8) : '';
   } catch (_) {
@@ -47,11 +45,13 @@ const decodeShortAccountId = (homeDir) => {
 
 // 优先展示邮箱；缺少邮箱时退回 account_id 前 8 位。
 const decodeAccountLabel = (homeDir) => {
-  return decodeAccountEmail(homeDir) || decodeShortAccountId(homeDir);
+  const auth = readAuth(homeDir);
+  return decodeAccountEmailFromAuth(auth) || decodeShortAccountIdFromAuth(auth);
 };
 
 module.exports = {
+  decodeAccountEmailFromAuth,
   decodeAccountLabel,
-  decodeShortAccountId,
+  decodeShortAccountIdFromAuth,
   readAuth,
 };

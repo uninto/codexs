@@ -19,7 +19,7 @@ const ACCOUNT_USAGE_STATES = Object.freeze({
 // 复用 readAuth 的 symlink 防护，保证 list / probe 与 use / init 安全等级一致。
 const extractAuthFields = (homeDir) => {
   try {
-    const auth = readAuth(homeDir);
+    const auth = typeof homeDir === 'string' ? readAuth(homeDir) : homeDir && homeDir.auth;
     const tokens = auth && auth.tokens;
     if (!tokens || typeof tokens.access_token !== 'string' || typeof tokens.account_id !== 'string') {
       return null;
@@ -47,13 +47,13 @@ const hasUsageFields = (item) => {
   return Boolean(item && (item.plan || isValidPercent(item.h5_used) || isValidPercent(item.d7_used)));
 };
 
-// 将账号目录转换成可并发查询 Usage 的请求条目。
+// 将账号条目转换成可并发查询 Usage 的请求条目。
 const buildUsageEntries = (accountDirs) => {
-  return accountDirs.flatMap((dir) => {
-    const fields = extractAuthFields(dir);
+  return accountDirs.flatMap((account) => {
+    const fields = extractAuthFields(account);
     if (!fields) return [];
     return [{
-      key: path.basename(dir),
+      key: typeof account === 'string' ? path.basename(account) : account.id,
       token: fields.accessToken,
       accountId: fields.accountId,
     }];

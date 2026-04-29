@@ -15,13 +15,13 @@ function usage(output = process.stdout) {
 
 说明：
   account 可以是序号、邮箱或短 ID；use 不带 account 时自动选择有额度账号。
-  ~/.codex-accounts 只存账号。
-  ~/.codex 不是独立账号，只是当前生效槽位。
+  ~/.codex/codex-accounts.json 存账号库。
+  ~/.codex/auth.json 是当前生效槽位。
   codexs remove 不带账号时删除离线账号。
-  codexs init 会检查基础环境，并把当前 ~/.codex 登录态同步到账号库。
+  codexs init 会检查基础环境，同步当前登录态，导入并删除旧 ~/.codex-accounts。
 
 环境变量：
-  CODEX_ACCOUNTS_ROOT  覆盖账号根目录，默认 ~/.codex-accounts
+  CODEX_ACCOUNTS_ROOT  init 导入旧账号库时覆盖旧库路径
   CODEX_BIN            指定 codex 可执行文件路径
 `);
 }
