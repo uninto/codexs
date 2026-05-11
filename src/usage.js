@@ -2,7 +2,6 @@ const path = require('node:path');
 const { readAuth } = require('./auth');
 
 const USAGE_ENDPOINT = 'https://chatgpt.com/backend-api/wham/usage';
-const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
 const REQUEST_TIMEOUT_MS = 8000;
 const USAGE_5H_WINDOW_SECONDS = 18000;
 const USAGE_7D_WINDOW_SECONDS = 604800;
@@ -67,7 +66,6 @@ const fetchUsageOne = async (entry, fetchImpl = fetch) => {
       headers: {
         Authorization: `Bearer ${entry.token}`,
         'ChatGPT-Account-Id': entry.accountId,
-        'User-Agent': USER_AGENT,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -101,7 +99,6 @@ const probeAccountStatus = async (homeDir, fetchImpl = fetch) => {
       headers: {
         Authorization: `Bearer ${fields.accessToken}`,
         'ChatGPT-Account-Id': fields.accountId,
-        'User-Agent': USER_AGENT,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });

@@ -441,6 +441,37 @@ test('probe account status uses usage endpoint response status', async () => {
   })), 'unknown');
 });
 
+test('usage requests avoid browser user agent challenge', async () => {
+  const home = makeTempHome();
+  const accountHome = path.join(home, '.codex-accounts', 'online@example.com');
+  writeUsageAuth(accountHome, 'online@example.com');
+  const [account] = readAccounts({ HOME: home });
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      json: async () => ({
+        plan_type: 'pro',
+        rate_limit: {
+          primary_window: { used_percent: 10, limit_window_seconds: 18000 },
+          secondary_window: { used_percent: 20, limit_window_seconds: 604800 },
+        },
+      }),
+    };
+  };
+
+  await usage.loadUsage([account], fetchImpl);
+  await usage.probeAccountStatus(account, fetchImpl);
+
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.options.headers.Authorization, 'Bearer access-token-online@example.com');
+    assert.equal(call.options.headers['ChatGPT-Account-Id'], 'account-online@example.com');
+    assert.equal(Object.hasOwn(call.options.headers, 'User-Agent'), false);
+  }
+});
+
 test('list rejects symlinked codex-accounts.json', () => {
   if (process.platform === 'win32') return;
 
